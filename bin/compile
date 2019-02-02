@@ -1,52 +1,81 @@
-#!/usr/bin/env bash
-# compile <build-dir> <cache-dir> <env-dir>
+#!/bin/bash
 
-set -e
+# Heroku standard way to log buildpack info to console
+status() {
+  echo "-----> $*"
+}
 
-BUILDPACK_BINDIR=`dirname $0` 
-BUILDPACK_DIR=`dirname $BUILDPACK_BINDIR`
-APP_DIR=$1
-APP_CACHEDIR=$2
-APP_ENVDIR=$3 
+set -e            # fail fast
+set -o pipefail   # dont ignore exit codes when piping output
 
-# make sure the cache directory is there 
-mkdir -p $APP_CACHEDIR 
+NGINX_VERSION=1.15.8
+PCRE_VERSION=8.21
+NGINX_RTMP_MODULE_VERSION=1.2.1
 
-# do we need to build nginx? 
-if [ ! -x $APP_CACHEDIR/sbin/nginx ] 
-then
-   echo "-----> heroku-buildpack-nginx-rtmp: No cached nginx binary, building."
-   rm -rf $APP_CACHEDIR/build
-   mkdir -p $APP_CACHEDIR/build
-   chmod +x $BUILDPACK_DIR/scripts/build_nginx.sh
-   $BUILDPACK_DIR/scripts/build_nginx.sh $APP_CACHEDIR
-fi  
+nginx_tarball_url=http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz
+pcre_tarball_url=http://sourceforge.net/projects/pcre/files/pcre/${PCRE_VERSION}/pcre-${PCRE_VERSION}.tar.bz2/download
+rtmp_tarball_url=https://github.com/arut/nginx-rtmp-module/archive/v${NGINX_RTMP_MODULE_VERSION}.tar.gz
 
-# if there's no binary now, we're cooked 
-if [ ! -x $APP_CACHEDIR/sbin/nginx ] 
-then
-   echo "-----> heroku-buildpack-nginx-rtmp: nginx build failed"
-   exit 1
-fi  
+status "This new NEW!"
 
-# otherwise, should be good to install  
-mkdir -p "$APP_DIR/bin/"
-cp "$APP_CACHEDIR/sbin/nginx" "$APP_DIR/bin/nginx"
-nginx_version=$("$APP_DIR/bin/nginx" -V 2>&1 | head -1 | awk '{ print $NF }')
+root_directory=$(pwd)
+status "$root_directory"
+ls_1=$(ls $root_directory)
+ls_2=$(ls $root_directory/bin)
+status "$ls_1"
+status "$ls_2"
 
-echo "-----> heroku-buildpack-nginx-rtmp: Installed ${nginx_version} to app/bin"
+cd $root_directory
 
-cp "$BUILDPACK_BINDIR/start-nginx" "$APP_DIR/bin/"
+status "Downloading $nginx_tarball_url"
+curl -L $nginx_tarball_url | tar xzv
 
-echo '-----> heroku-buildpack-nginx-rtmp: Added start-nginx to app/bin'
+status "Downloading $pcre_tarball_url"
+cd nginx-${NGINX_VERSION} && curl -L $pcre_tarball_url | tar xvj
 
-mkdir -p "$APP_DIR/config"
-mkdir -p "$APP_DIR/logs"
+status "Downloading $rtmp_tarball_url"
+curl -L $rtmp_tarball_url | tar xzv
 
-if [[ ! -f $1/config/nginx.conf ]]; then
-	cp $BUILDPACK_DIR/config/nginx.conf "$1/config/"
-	echo '-----> heroku-buildpack-nginx-rtmp: Default config copied to app/config.'
+status "Compiling nginx"
+./configure \
+  --with-pcre=pcre-${PCRE_VERSION} \
+  --prefix=/tmp/nginx \
+  --with-http_ssl_module \
+  --with-http_stub_status_module \
+  --add-module=${root_directory}/nginx-${NGINX_VERSION}/nginx-rtmp-module-${NGINX_RTMP_MODULE_VERSION} \
+  --with-debug
+
+status "Installing nginx"
+make install --silent
+
+ls_3=$(pwd)
+ls_4=$(ls $ls_3)
+status "$ls_3"
+status "$ls_4"
+
+status "nginx-buildpack: Installed nginx-${NGINX_VERSION} with nginx-rtmp-module-${NGINX_RTMP_MODULE_VERSION}"
+
+mkdir -p "$1/bin/"
+
+
+
+cp "/tmp/nginx/sbin/nginx" "$1/bin/"
+status "nginx-buildpack: Added nginx to app/bin"
+
+cp "$root_directory/bin/start-nginx" "$1/bin/"
+status "nginx-buildpack: Added start-nginx to app/bin"
+
+cp "$root_directory/bin/start-nginx-solo" "$1/bin/"
+status "nginx-buildpack: Added start-nginx-solo to app/bin"
+
+mkdir -p "$1/config"
+cp "$root_directory/config/mime.types" "$1/config/"
+status "nginx-buildpack: Default mime.types copied to app/config/"
+
+if [[ ! -f $1/config/nginx.conf.erb ]]; then
+	cp config/nginx.conf.erb "$1/config/"
+	status "nginx-buildpack: Default config copied to app/config."
 else
-	echo '-----> heroku-buildpack-nginx-rtmp: Custom config found in app/config.'
+	status "nginx-buildpack: Custom config found in app/config."
 fi
 exit 0
